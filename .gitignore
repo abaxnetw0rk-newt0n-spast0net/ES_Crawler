@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Playwright
+.cache/
+ms-playwright/
+
+# Generated output — regenerable by running the script, keeps repo small
+wiki_pdfs/
+pages_pdf/
+downloads/
+*.pdf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
