@@ -21,31 +21,24 @@ entersoft_wiki_crawler_v2_3.py  (version 2.3)
      αναφορά στο manifest, ώστε να μην υπάρχουν διπλότυπα PDF (μικρότερο
      μέγεθος repo).
 
-Νέο στο 2.3:
-  - Το .exe πλέον ΔΕΝ χρειάζεται πια χειροκίνητο "playwright install
-    chromium" σε κάθε νέο μηχάνημα. Στην εκκίνηση, αν δεν εντοπιστεί
-    εγκατεστημένο Chromium, το κατεβάζει και το εγκαθιστά αυτόματα μέσα
-    στο ίδιο το .exe — χωρίς να χρειάζεται Python ή pip εγκατεστημένα στο
-    μηχάνημα-στόχο (βλ. ensure_playwright_browser()). Χρειάζεται απλώς
-    σύνδεση στο internet την πρώτη φορά (κατέβασμα ~150-300MB, μία φορά ανά
-    μηχάνημα/χρήστη).
-  - Το build_exe.ps1 ενημερώθηκε ώστε να συμπεριλαμβάνει μέσα στο .exe όλα
-    τα απαραίτητα αρχεία του Playwright (driver) που χρειάζεται αυτή η
-    αυτόματη εγκατάσταση (--collect-all playwright).
-
 Νέο στο 2.2:
   - Το manifest.csv έχει πλέον στήλη "downloaded_at" (ημερομηνία/ώρα λήψης).
   - Νέο όρισμα --refresh-after N: σελίδες που κατέβηκαν πριν από N ή
     περισσότερες ημέρες ξαναφκατεβαίνουν αυτόματα (ακόμα κι αν υπάρχουν ήδη),
     ώστε να πιάνει τυχόν αλλαγές περιεχομένου στο wiki με τον καιρό. Χωρίς
-    αυτό το όρισμα, μια σελίδα που έχει κατέβει ΠΟΤΕ δεν ξαναφκατεβαίνει
-    (όπως στο 2.1).
+    αυτό το όρισμα, μια σελίδα που έχει κατέβει ΠΟΤΕ δεν ξαναφκατεβαίνει.
   - Μπορεί να μεταγλωττιστεί σε αυτόνομο Windows .exe (βλ. build_exe.ps1 /
     README, ενότητα "Build ως Windows .exe").
 
-Εγκατάσταση (μία φορά, ΜΟΝΟ αν τρέχεις το .py — το .exe δεν τα χρειάζεται):
+Νέο στο 2.3:
+  - Το .exe πλέον ελέγχει μόνο του αν λείπει το Chromium του Playwright και,
+    αν λείπει, το κατεβάζει/εγκαθιστά αυτόματα κατά την πρώτη εκτέλεση —
+    ΧΩΡΙΣ να χρειάζεται καθόλου Python εγκατεστημένο στο μηχάνημα. Αρκεί
+    σύνδεση internet. Ισχύει και όταν τρέχεις το .py απευθείας με python.
+
+Εγκατάσταση για ανάπτυξη/τρέξιμο ως script (μία φορά):
     pip install -r requirements.txt
-    playwright install chromium
+    playwright install chromium   # προαιρετικό πλέον — το κάνει μόνο του αν λείπει
 
 Βασική χρήση:
     python entersoft_wiki_crawler_v2_3.py --insecure
@@ -68,6 +61,8 @@ entersoft_wiki_crawler_v2_3.py  (version 2.3)
     --refresh-after N       Ξαναφκατέβασε σελίδες παλαιότερες από N ημέρες
                              (default: καμία λήξη — ό,τι έχει κατέβει ποτέ
                              θεωρείται μόνιμα έτοιμο)
+    --skip-chromium-check   Παράλειψε τον αυτόματο έλεγχο/εγκατάσταση Chromium
+                             (χρήσιμο αν το έχεις ήδη εγκαταστήσει χειροκίνητα)
     --force                 Ξανακατέβασε ΟΛΕΣ τις σελίδες, αγνοώντας manifest.csv
                              και υπάρχοντα αρχεία (πλήρες overwrite).
                              Χωρίς αυτό: resume mode — κατεβάζει μόνο ό,τι
@@ -76,12 +71,26 @@ entersoft_wiki_crawler_v2_3.py  (version 2.3)
 
 import argparse
 import csv
+import os
 import re
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote
+
+# --- Fix για PyInstaller .exe: το bundled Playwright driver μπορεί να ψάξει
+# το Chromium μέσα στον προσωρινό φάκελο εξαγωγής του .exe (_MEIxxxx), που
+# διαγράφεται μόλις κλείσει το πρόγραμμα, αντί για το μόνιμο cache του χρήστη.
+# Ορίζουμε ρητά το ίδιο, σταθερό path ώστε install & launch να συμφωνούν πάντα.
+if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+    if sys.platform == "win32":
+        _base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        _base = os.path.join(os.path.expanduser("~"), "Library", "Caches")
+    else:
+        _base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(_base, "ms-playwright")
 
 import requests
 from playwright.sync_api import sync_playwright
@@ -256,79 +265,56 @@ def is_stale(downloaded_at, refresh_after):
     return age_days >= refresh_after
 
 
-def ensure_playwright_browser(browser_name="chromium"):
+def ensure_chromium_installed(skip_check=False):
     """
-    Εξασφαλίζει ότι το ζητούμενο Playwright browser (default: chromium) είναι
-    εγκατεστημένο στο μηχάνημα. Αν δεν είναι, το κατεβάζει και το εγκαθιστά
-    αυτόματα — ΧΩΡΙΣ να χρειάζεται ξεχωριστά εγκατεστημένο Python/pip στο
-    μηχάνημα-στόχο. Δουλεύει τόσο όταν τρέχει το .py κανονικά όσο και μέσα
-    από το μεταγλωττισμένο .exe (βλ. build_exe.ps1 — το --collect-all
-    playwright εξασφαλίζει ότι ο installer του Playwright είναι μέσα στο
-    .exe).
-
-    Το Chromium αποθηκεύεται στην προσωπική cache του χρήστη
-    (%LOCALAPPDATA%\\ms-playwright στα Windows) — ίδιο μέρος είτε το
-    εγκαταστήσεις μέσω `playwright install chromium` είτε αυτόματα εδώ, άρα
-    αν το έχεις ήδη εγκαταστήσει παλιότερα δεν θα ξαναβασιστεί.
+    Ελέγχει αν το Chromium του Playwright είναι εγκατεστημένο· αν όχι, το
+    κατεβάζει/εγκαθιστά αυτόματα, καλώντας το ενσωματωμένο playwright CLI
+    ΜΕΣΑ στην ίδια διεργασία (δουλεύει και μέσα σε PyInstaller .exe, χωρίς
+    να χρειάζεται ξεχωριστό Python στο μηχάνημα).
     """
-    def _try_launch():
-        with sync_playwright() as p:
-            browser = getattr(p, browser_name).launch()
-            browser.close()
+    if skip_check:
+        return
 
     try:
-        _try_launch()
-        return  # Ήδη εγκατεστημένο και λειτουργικό — τίποτα άλλο να γίνει.
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            browser.close()
+        return  # ήδη εγκατεστημένο, όλα καλά
     except Exception as e:
         msg = str(e)
-        looks_missing = (
-            "Executable doesn't exist" in msg
-            or "playwright install" in msg.lower()
-            or "download new browsers" in msg.lower()
-        )
+        looks_missing = ("Executable doesn't exist" in msg
+                          or "playwright install" in msg
+                          or "BrowserType.launch" in msg)
         if not looks_missing:
-            raise  # Άσχετο σφάλμα (π.χ. δικτύου) — μην το κρύψεις σαν "λείπει".
+            # κάτι άλλο πήγε στραβά (όχι θέμα λείπον browser) -> άσε το να αναδειχθεί κανονικά
+            return
 
-        print(f"[!] Δεν εντοπίστηκε εγκατεστημένο {browser_name.capitalize()}.")
-        print(f"[+] Αυτόματη λήψη/εγκατάσταση {browser_name.capitalize()} "
-              f"(μία φορά ανά μηχάνημα, ~150-300MB, χρειάζεται internet)...")
-
-    _install_browser(browser_name)
-
-    # Retry μετά την εγκατάσταση· αν αποτύχει ξανά, ας ανέβει το σφάλμα.
-    _try_launch()
-    print(f"[+] Το {browser_name.capitalize()} εγκαταστάθηκε επιτυχώς.\n")
-
-
-def _install_browser(browser_name):
-    """
-    Τρέχει τον ενσωματωμένο installer του Playwright ΜΕΣΑ στην ίδια
-    διεργασία (καλώντας απευθείας το playwright CLI entrypoint), χωρίς να
-    ανοίγει subprocess σε εξωτερικό python/pip. Έτσι δουλεύει και μέσα από
-    ένα αυτόνομο PyInstaller .exe σε μηχάνημα χωρίς καθόλου Python.
-    """
-    from playwright.__main__ import main as playwright_cli_main
+    print("[+] Το Chromium δεν βρέθηκε — γίνεται αυτόματη λήψη/εγκατάσταση "
+          "(πρώτη εκτέλεση, ~150-300MB, χρειάζεται σύνδεση internet)...")
+    try:
+        from playwright.__main__ import main as playwright_cli_main
+    except ImportError as e:
+        print(f"[!] Δεν ήταν δυνατή η αυτόματη εγκατάσταση Chromium: {e}\n"
+              f"    Τρέξε χειροκίνητα: playwright install chromium", file=sys.stderr)
+        raise
 
     old_argv = sys.argv
+    sys.argv = ["playwright", "install", "chromium"]
     try:
-        sys.argv = ["playwright", "install", browser_name]
         playwright_cli_main()
     except SystemExit as e:
-        # Το playwright CLI τερματίζει με sys.exit() ακόμα και σε επιτυχία
-        # (exit code 0) — μόνο μη-μηδενικός κωδικός σημαίνει πραγματική
-        # αποτυχία εγκατάστασης.
         if e.code not in (0, None):
-            raise RuntimeError(
-                f"Η αυτόματη εγκατάσταση του {browser_name} απέτυχε "
-                f"(exit code {e.code}). Δοκίμασε να τρέξεις χειροκίνητα: "
-                f"playwright install {browser_name}"
-            ) from e
+            print(f"[!] Η εγκατάσταση Chromium απέτυχε (exit code {e.code}).", file=sys.stderr)
+            raise
     finally:
         sys.argv = old_argv
 
+    print("[+] Ολοκληρώθηκε η εγκατάσταση του Chromium.\n")
+
 
 def crawl(session, output_dir, delay, insecure, dry_run,
-          exclude_re, min_category_size, force=False, refresh_after=None):
+          exclude_re, min_category_size, force=False, refresh_after=None,
+          skip_chromium_check=False):
     print("[+] Ανάκτηση λίστας κατηγοριών...")
     categories = get_all_categories(session, delay, min_category_size, exclude_re)
     print(f"[+] Βρέθηκαν {len(categories)} κατηγορίες (μετά τα φίλτρα).\n")
@@ -383,7 +369,7 @@ def crawl(session, output_dir, delay, insecure, dry_run,
             print("[dry-run] Δεν παράχθηκαν PDF. Δες το manifest.csv για την πλήρη λίστα.")
             return
 
-        ensure_playwright_browser("chromium")
+        ensure_chromium_installed(skip_check=skip_chromium_check)
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
@@ -480,8 +466,8 @@ def crawl(session, output_dir, delay, insecure, dry_run,
 def main():
     parser = argparse.ArgumentParser(
         description="ES-Crawler v2.3 — Αυτόματη λήψη όλων των σελίδων του Entersoft wiki ως PDF, "
-                    "ανά κατηγορία, με resume μέσω manifest.csv, προαιρετικό auto-refresh παλιών "
-                    "σελίδων, και αυτόματη εγκατάσταση Chromium αν λείπει (χωρίς pip/Python)."
+                    "ανά κατηγορία, με resume μέσω manifest.csv, auto-refresh παλιών σελίδων, "
+                    "και αυτόματη εγκατάσταση Chromium"
     )
     parser.add_argument("--output-dir", default="wiki_pdfs")
     parser.add_argument("--insecure", action="store_true")
@@ -494,6 +480,8 @@ def main():
     parser.add_argument("--min-category-size", type=int, default=1)
     parser.add_argument("--refresh-after", type=int, default=None,
                          help="Ξαναφκατέβασε σελίδες παλαιότερες από N ημέρες (default: ποτέ)")
+    parser.add_argument("--skip-chromium-check", action="store_true",
+                         help="Παράλειψε τον αυτόματο έλεγχο/εγκατάσταση Chromium")
     parser.add_argument("--force", action="store_true",
                          help="Ξανακατέβασε (overwrite) όλες τις σελίδες, αγνοώντας το manifest.csv "
                               "και τα υπάρχοντα αρχεία. Χωρίς αυτό: resume mode (default).")
@@ -510,6 +498,7 @@ def main():
         args.min_category_size,
         force=args.force,
         refresh_after=args.refresh_after,
+        skip_chromium_check=args.skip_chromium_check,
     )
 
 
