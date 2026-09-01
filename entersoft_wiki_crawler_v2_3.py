@@ -265,29 +265,52 @@ def is_stale(downloaded_at, refresh_after):
     return age_days >= refresh_after
 
 
+def find_chromium_executable():
+    """
+    Ψάχνει χειροκίνητα το εγκατεστημένο (πλήρες, όχι headless-shell) Chromium
+    μέσα στο PLAYWRIGHT_BROWSERS_PATH. Το κάνουμε αυτό γιατί μέσα σε
+    PyInstaller .exe, το p.chromium.launch() έχει ένα γνωστό bug: ψάχνει
+    πάντα σε λάθος, προσωρινό φάκελο (_MEIxxxx\\...\\.local-browsers), ό,τι
+    και να ορίσουμε στο PLAYWRIGHT_BROWSERS_PATH. Εντοπίζοντας το εκτελέσιμο
+    εμείς οι ίδιοι και περνώντας το ρητά στο launch(), παρακάμπτουμε τελείως
+    αυτόν τον buggy αυτόματο εντοπισμό.
+    """
+    base = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""))
+    if not base.exists():
+        return None
+
+    # πιάνει "chromium-1234" αλλά ΟΧΙ "chromium_headless_shell-1234"
+    # (το headless-shell binary δεν υποστηρίζει page.pdf())
+    candidates = sorted(
+        (c for c in base.glob("chromium-*") if c.is_dir() and "headless_shell" not in c.name),
+        reverse=True,
+    )
+
+    for c in candidates:
+        if sys.platform == "win32":
+            exe = c / "chrome-win64" / "chrome.exe"
+        elif sys.platform == "darwin":
+            exe = next(iter(c.glob("chrome-mac*/*.app/Contents/MacOS/*")), None)
+        else:
+            exe = c / "chrome-linux" / "chrome"
+        if exe and Path(exe).exists():
+            return str(exe)
+    return None
+
+
 def ensure_chromium_installed(skip_check=False):
     """
-    Ελέγχει αν το Chromium του Playwright είναι εγκατεστημένο· αν όχι, το
-    κατεβάζει/εγκαθιστά αυτόματα, καλώντας το ενσωματωμένο playwright CLI
-    ΜΕΣΑ στην ίδια διεργασία (δουλεύει και μέσα σε PyInstaller .exe, χωρίς
-    να χρειάζεται ξεχωριστό Python στο μηχάνημα).
+    Επιστρέφει το path του εγκατεστημένου Chromium executable (ή None αν
+    παραλείφθηκε ο έλεγχος). Αν δεν βρεθεί, το κατεβάζει/εγκαθιστά αυτόματα
+    καλώντας το ενσωματωμένο playwright CLI ΜΕΣΑ στην ίδια διεργασία
+    (δουλεύει και μέσα σε PyInstaller .exe, χωρίς ξεχωριστό Python).
     """
     if skip_check:
-        return
+        return None
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            browser.close()
-        return  # ήδη εγκατεστημένο, όλα καλά
-    except Exception as e:
-        msg = str(e)
-        looks_missing = ("Executable doesn't exist" in msg
-                          or "playwright install" in msg
-                          or "BrowserType.launch" in msg)
-        if not looks_missing:
-            # κάτι άλλο πήγε στραβά (όχι θέμα λείπον browser) -> άσε το να αναδειχθεί κανονικά
-            return
+    exe = find_chromium_executable()
+    if exe:
+        return exe
 
     print("[+] Το Chromium δεν βρέθηκε — γίνεται αυτόματη λήψη/εγκατάσταση "
           "(πρώτη εκτέλεση, ~150-300MB, χρειάζεται σύνδεση internet)...")
@@ -310,6 +333,13 @@ def ensure_chromium_installed(skip_check=False):
         sys.argv = old_argv
 
     print("[+] Ολοκληρώθηκε η εγκατάσταση του Chromium.\n")
+
+    exe = find_chromium_executable()
+    if not exe:
+        print("[!] Προειδοποίηση: δεν εντοπίστηκε το εκτελέσιμο Chromium μετά την "
+              "εγκατάσταση — θα γίνει προσπάθεια με τον προεπιλεγμένο εντοπισμό "
+              "του Playwright (ίσως αποτύχει μέσα σε .exe).", file=sys.stderr)
+    return exe
 
 
 def crawl(session, output_dir, delay, insecure, dry_run,
@@ -369,10 +399,11 @@ def crawl(session, output_dir, delay, insecure, dry_run,
             print("[dry-run] Δεν παράχθηκαν PDF. Δες το manifest.csv για την πλήρη λίστα.")
             return
 
-        ensure_chromium_installed(skip_check=skip_chromium_check)
+        chromium_exe = ensure_chromium_installed(skip_check=skip_chromium_check)
 
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            launch_kwargs = {"executable_path": chromium_exe} if chromium_exe else {}
+            browser = p.chromium.launch(**launch_kwargs)
             context = browser.new_context(ignore_https_errors=insecure)
             cookies = requests_cookies_to_playwright(session)
             if cookies:
